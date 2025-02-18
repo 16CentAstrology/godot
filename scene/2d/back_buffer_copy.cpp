@@ -45,7 +45,7 @@ void BackBufferCopy::_update_copy_mode() {
 	}
 }
 
-#ifdef TOOLS_ENABLED
+#ifdef DEBUG_ENABLED
 Rect2 BackBufferCopy::_edit_get_rect() const {
 	return rect;
 }
@@ -53,7 +53,7 @@ Rect2 BackBufferCopy::_edit_get_rect() const {
 bool BackBufferCopy::_edit_use_rect() const {
 	return true;
 }
-#endif
+#endif // DEBUG_ENABLED
 
 Rect2 BackBufferCopy::get_anchorable_rect() const {
 	return rect;
@@ -62,6 +62,7 @@ Rect2 BackBufferCopy::get_anchorable_rect() const {
 void BackBufferCopy::set_rect(const Rect2 &p_rect) {
 	rect = p_rect;
 	_update_copy_mode();
+	item_rect_changed();
 }
 
 Rect2 BackBufferCopy::get_rect() const {
@@ -101,6 +102,7 @@ void BackBufferCopy::_bind_methods() {
 
 BackBufferCopy::BackBufferCopy() {
 	_update_copy_mode();
+	set_hide_clip_children(true);
 }
 
 BackBufferCopy::~BackBufferCopy() {

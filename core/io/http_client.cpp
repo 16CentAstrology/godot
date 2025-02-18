@@ -42,9 +42,9 @@ const char *HTTPClient::_methods[METHOD_MAX] = {
 	"PATCH"
 };
 
-HTTPClient *HTTPClient::create() {
+HTTPClient *HTTPClient::create(bool p_notify_postinitialize) {
 	if (_create) {
-		return _create();
+		return _create(p_notify_postinitialize);
 	}
 	return nullptr;
 }
@@ -63,8 +63,9 @@ Error HTTPClient::_request_raw(Method p_method, const String &p_url, const Vecto
 }
 
 Error HTTPClient::_request(Method p_method, const String &p_url, const Vector<String> &p_headers, const String &p_body) {
-	int size = p_body.length();
-	return request(p_method, p_url, p_headers, size > 0 ? (const uint8_t *)p_body.utf8().get_data() : nullptr, size);
+	CharString body_utf8 = p_body.utf8();
+	int size = body_utf8.length();
+	return request(p_method, p_url, p_headers, size > 0 ? (const uint8_t *)body_utf8.get_data() : nullptr, size);
 }
 
 String HTTPClient::query_string_from_dict(const Dictionary &p_dict) {
@@ -72,7 +73,7 @@ String HTTPClient::query_string_from_dict(const Dictionary &p_dict) {
 	Array keys = p_dict.keys();
 	for (int i = 0; i < keys.size(); ++i) {
 		String encoded_key = String(keys[i]).uri_encode();
-		Variant value = p_dict[keys[i]];
+		const Variant &value = p_dict[keys[i]];
 		switch (value.get_type()) {
 			case Variant::ARRAY: {
 				// Repeat the key with every values
@@ -99,9 +100,9 @@ String HTTPClient::query_string_from_dict(const Dictionary &p_dict) {
 Error HTTPClient::verify_headers(const Vector<String> &p_headers) {
 	for (int i = 0; i < p_headers.size(); i++) {
 		String sanitized = p_headers[i].strip_edges();
-		ERR_FAIL_COND_V_MSG(sanitized.is_empty(), ERR_INVALID_PARAMETER, "Invalid HTTP header at index " + itos(i) + ": empty.");
-		ERR_FAIL_COND_V_MSG(sanitized.find(":") < 1, ERR_INVALID_PARAMETER,
-				"Invalid HTTP header at index " + itos(i) + ": String must contain header-value pair, delimited by ':', but was: " + p_headers[i]);
+		ERR_FAIL_COND_V_MSG(sanitized.is_empty(), ERR_INVALID_PARAMETER, vformat("Invalid HTTP header at index %d: empty.", i));
+		ERR_FAIL_COND_V_MSG(sanitized.find_char(':') < 1, ERR_INVALID_PARAMETER,
+				vformat("Invalid HTTP header at index %d: String must contain header-value pair, delimited by ':', but was: '%s'.", i, p_headers[i]));
 	}
 
 	return OK;
@@ -112,7 +113,7 @@ Dictionary HTTPClient::_get_response_headers_as_dictionary() {
 	get_response_headers(&rh);
 	Dictionary ret;
 	for (const String &s : rh) {
-		int sp = s.find(":");
+		int sp = s.find_char(':');
 		if (sp == -1) {
 			continue;
 		}
@@ -138,7 +139,7 @@ PackedStringArray HTTPClient::_get_response_headers() {
 }
 
 void HTTPClient::_bind_methods() {
-	ClassDB::bind_method(D_METHOD("connect_to_host", "host", "port", "use_tls", "verify_host"), &HTTPClient::connect_to_host, DEFVAL(-1), DEFVAL(false), DEFVAL(true));
+	ClassDB::bind_method(D_METHOD("connect_to_host", "host", "port", "tls_options"), &HTTPClient::connect_to_host, DEFVAL(-1), DEFVAL(Ref<TLSOptions>()));
 	ClassDB::bind_method(D_METHOD("set_connection", "connection"), &HTTPClient::set_connection);
 	ClassDB::bind_method(D_METHOD("get_connection"), &HTTPClient::get_connection);
 	ClassDB::bind_method(D_METHOD("request_raw", "method", "url", "headers", "body"), &HTTPClient::_request_raw);

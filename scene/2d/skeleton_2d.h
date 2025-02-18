@@ -32,7 +32,7 @@
 #define SKELETON_2D_H
 
 #include "scene/2d/node_2d.h"
-#include "scene/resources/skeleton_modification_2d.h"
+#include "scene/resources/2d/skeleton/skeleton_modification_2d.h"
 
 class Skeleton2D;
 
@@ -80,9 +80,6 @@ public:
 
 	PackedStringArray get_configuration_warnings() const override;
 
-	void set_default_length(real_t p_length);
-	real_t get_default_length() const;
-
 	void set_autocalculate_length_and_angle(bool p_autocalculate);
 	bool get_autocalculate_length_and_angle() const;
 	void set_length(real_t p_length);
@@ -126,7 +123,7 @@ class Skeleton2D : public Node2D {
 		bool local_pose_override_persistent = false;
 	};
 
-	Vector<Bone> bones;
+	LocalVector<Bone> bones;
 
 	bool bone_setup_dirty = true;
 	void _make_bone_setup_dirty();
@@ -140,7 +137,21 @@ class Skeleton2D : public Node2D {
 
 	Ref<SkeletonModificationStack2D> modification_stack;
 
+	///////////////////////////////////////////////////////
+	// INTERPOLATION
+	struct InterpolationData {
+		Transform2D xform_curr;
+		Transform2D xform_prev;
+		uint32_t last_update_physics_tick = UINT32_MAX; // Ensure tick 0 is detected as a change.
+	} _interpolation_data;
+
+	void _update_process_mode();
+	void _ensure_update_interpolation_data();
+
 protected:
+	virtual void _physics_interpolated_changed() override;
+	///////////////////////////////////////////////////////
+
 	void _notification(int p_what);
 	static void _bind_methods();
 	bool _set(const StringName &p_path, const Variant &p_value);

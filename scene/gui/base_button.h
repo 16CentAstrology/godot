@@ -61,7 +61,7 @@ private:
 		bool hovering = false;
 		bool press_attempt = false;
 		bool pressing_inside = false;
-
+		bool pressed_down_with_focus = false;
 		bool disabled = false;
 
 	} status;
@@ -134,7 +134,7 @@ public:
 	void set_shortcut(const Ref<Shortcut> &p_shortcut);
 	Ref<Shortcut> get_shortcut() const;
 
-	virtual String get_tooltip(const Point2 &p_pos) const override;
+	virtual Control *make_custom_tooltip(const String &p_text) const override;
 
 	void set_button_group(const Ref<ButtonGroup> &p_group);
 	Ref<ButtonGroup> get_button_group() const;
@@ -152,6 +152,7 @@ class ButtonGroup : public Resource {
 	GDCLASS(ButtonGroup, Resource);
 	friend class BaseButton;
 	HashSet<BaseButton *> buttons;
+	bool allow_unpress = false;
 
 protected:
 	static void _bind_methods();
@@ -160,6 +161,8 @@ public:
 	BaseButton *get_pressed_button();
 	void get_buttons(List<BaseButton *> *r_buttons);
 	TypedArray<BaseButton> _get_buttons();
+	void set_allow_unpress(bool p_enabled);
+	bool is_allow_unpress();
 	ButtonGroup();
 };
 

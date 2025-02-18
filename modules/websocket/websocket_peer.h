@@ -59,7 +59,7 @@ private:
 	virtual Error _send_bind(const PackedByteArray &p_data, WriteMode p_mode = WRITE_MODE_BINARY);
 
 protected:
-	static WebSocketPeer *(*_create)();
+	static WebSocketPeer *(*_create)(bool p_notify_postinitialize);
 
 	static void _bind_methods();
 
@@ -71,17 +71,18 @@ protected:
 
 	int outbound_buffer_size = DEFAULT_BUFFER_SIZE;
 	int inbound_buffer_size = DEFAULT_BUFFER_SIZE;
-	int max_queued_packets = 2048;
+	int max_queued_packets = 4096;
+	uint64_t heartbeat_interval_msec = 0;
 
 public:
-	static WebSocketPeer *create() {
+	static WebSocketPeer *create(bool p_notify_postinitialize = true) {
 		if (!_create) {
 			return nullptr;
 		}
-		return _create();
+		return _create(p_notify_postinitialize);
 	}
 
-	virtual Error connect_to_url(const String &p_url, bool p_verify_tls = true, Ref<X509Certificate> p_cert = Ref<X509Certificate>()) { return ERR_UNAVAILABLE; };
+	virtual Error connect_to_url(const String &p_url, Ref<TLSOptions> p_options = Ref<TLSOptions>()) = 0;
 	virtual Error accept_stream(Ref<StreamPeer> p_stream) = 0;
 
 	virtual Error send(const uint8_t *p_buffer, int p_buffer_size, WriteMode p_mode) = 0;
@@ -116,6 +117,9 @@ public:
 
 	void set_max_queued_packets(int p_max_queued_packets);
 	int get_max_queued_packets() const;
+
+	double get_heartbeat_interval() const;
+	void set_heartbeat_interval(double p_interval);
 
 	WebSocketPeer();
 	~WebSocketPeer();

@@ -38,7 +38,7 @@ class PacketPeerDTLS : public PacketPeer {
 	GDCLASS(PacketPeerDTLS, PacketPeer);
 
 protected:
-	static PacketPeerDTLS *(*_create)();
+	static PacketPeerDTLS *(*_create)(bool p_notify_postinitialize);
 	static void _bind_methods();
 
 	static bool available;
@@ -53,11 +53,11 @@ public:
 	};
 
 	virtual void poll() = 0;
-	virtual Error connect_to_peer(Ref<PacketPeerUDP> p_base, bool p_validate_certs = true, const String &p_for_hostname = String(), Ref<X509Certificate> p_ca_certs = Ref<X509Certificate>()) = 0;
+	virtual Error connect_to_peer(Ref<PacketPeerUDP> p_base, const String &p_hostname, Ref<TLSOptions> p_options = Ref<TLSOptions>()) = 0;
 	virtual void disconnect_from_peer() = 0;
 	virtual Status get_status() const = 0;
 
-	static PacketPeerDTLS *create();
+	static PacketPeerDTLS *create(bool p_notify_postinitialize = true);
 	static bool is_available();
 
 	PacketPeerDTLS() {}

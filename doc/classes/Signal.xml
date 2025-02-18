@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8" ?>
-<class name="Signal" version="4.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../class.xsd">
+<class name="Signal" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../class.xsd">
 	<brief_description>
-		Built-in type representing a signal defined in an object.
+		A built-in type representing a signal of an [Object].
 	</brief_description>
 	<description>
-		[Signal] is a built-in [Variant] type that represents a signal of an [Object] instance. Like all [Variant] types, it can be stored in variables and passed to functions. Signals allow all connected [Callable]s (and by extension their respective objects) to listen and react to events, without directly referencing one another. This keeps the code flexible and easier to manage.
+		[Signal] is a built-in [Variant] type that represents a signal of an [Object] instance. Like all [Variant] types, it can be stored in variables and passed to functions. Signals allow all connected [Callable]s (and by extension their respective objects) to listen and react to events, without directly referencing one another. This keeps the code flexible and easier to manage. You can check whether an [Object] has a given signal name using [method Object.has_signal].
 		In GDScript, signals can be declared with the [code]signal[/code] keyword. In C#, you may use the [code][Signal][/code] attribute on a delegate.
 		[codeblocks]
 		[gdscript]
@@ -16,12 +16,12 @@
 		[/gdscript]
 		[csharp]
 		[Signal]
-		delegate void Attacked();
+		delegate void AttackedEventHandler();
 
 		// Additional arguments may be declared.
 		// These arguments must be passed when the signal is emitted.
 		[Signal]
-		delegate void ItemDropped(itemName: string, amount: int);
+		delegate void ItemDroppedEventHandler(string itemName, int amount);
 		[/csharp]
 		[/codeblocks]
 	</description>
@@ -48,7 +48,7 @@
 			<param index="0" name="object" type="Object" />
 			<param index="1" name="signal" type="StringName" />
 			<description>
-				Creates a new [Signal] named [param signal] in the specified [param object].
+				Creates a [Signal] object referencing a signal named [param signal] in the specified [param object].
 			</description>
 		</constructor>
 	</constructors>
@@ -85,7 +85,10 @@
 		<method name="get_connections" qualifiers="const">
 			<return type="Array" />
 			<description>
-				Returns the list of [Callable]s connected to this signal.
+				Returns an [Array] of connections for this signal. Each connection is represented as a [Dictionary] that contains three entries:
+				- [code]signal[/code] is a reference to this signal;
+				- [code]callable[/code] is a reference to the connected [Callable];
+				- [code]flags[/code] is a combination of [enum Object.ConnectFlags].
 			</description>
 		</method>
 		<method name="get_name" qualifiers="const">
@@ -106,6 +109,12 @@
 				Returns the ID of the object emitting this signal (see [method Object.get_instance_id]).
 			</description>
 		</method>
+		<method name="has_connections" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] if any [Callable] is connected to this signal.
+			</description>
+		</method>
 		<method name="is_connected" qualifiers="const">
 			<return type="bool" />
 			<param index="0" name="callable" type="Callable" />
@@ -116,7 +125,7 @@
 		<method name="is_null" qualifiers="const">
 			<return type="bool" />
 			<description>
-				Returns [code]true[/code] if the signal's name does not exist in its object, or the object is not valid.
+				Returns [code]true[/code] if this [Signal] has no object and the signal name is empty. Equivalent to [code]signal == Signal()[/code].
 			</description>
 		</method>
 	</methods>

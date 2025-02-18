@@ -30,13 +30,12 @@
 
 package org.godotengine.godot;
 
+import org.godotengine.godot.error.Error;
 import org.godotengine.godot.input.GodotEditText;
 
 import android.app.Activity;
-import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
-import android.graphics.Point;
 import android.graphics.Rect;
 import android.net.Uri;
 import android.os.Build;
@@ -49,6 +48,9 @@ import android.view.Display;
 import android.view.DisplayCutout;
 import android.view.WindowInsets;
 
+import androidx.core.content.FileProvider;
+
+import java.io.File;
 import java.util.List;
 import java.util.Locale;
 
@@ -84,35 +86,60 @@ public class GodotIO {
 	// MISCELLANEOUS OS IO
 	/////////////////////////
 
-	public int openURI(String p_uri) {
+	public int openURI(String uriString) {
 		try {
-			String path = p_uri;
-			String type = "";
-			if (path.startsWith("/")) {
-				//absolute path to filesystem, prepend file://
-				path = "file://" + path;
-				if (p_uri.endsWith(".png") || p_uri.endsWith(".jpg") || p_uri.endsWith(".gif") || p_uri.endsWith(".webp")) {
-					type = "image/*";
+			Uri dataUri;
+			String dataType = "";
+			boolean grantReadUriPermission = false;
+
+			if (uriString.startsWith("/") || uriString.startsWith("file://")) {
+				String filePath = uriString;
+				// File uris needs to be provided via the FileProvider
+				grantReadUriPermission = true;
+				if (filePath.startsWith("file://")) {
+					filePath = filePath.replace("file://", "");
 				}
+
+				File targetFile = new File(filePath);
+				dataUri = FileProvider.getUriForFile(activity, activity.getPackageName() + ".fileprovider", targetFile);
+				dataType = activity.getContentResolver().getType(dataUri);
+			} else {
+				dataUri = Uri.parse(uriString);
 			}
 
 			Intent intent = new Intent();
 			intent.setAction(Intent.ACTION_VIEW);
-			if (!type.equals("")) {
-				intent.setDataAndType(Uri.parse(path), type);
+			if (TextUtils.isEmpty(dataType)) {
+				intent.setData(dataUri);
 			} else {
-				intent.setData(Uri.parse(path));
+				intent.setDataAndType(dataUri, dataType);
+			}
+			if (grantReadUriPermission) {
+				intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
 			}
 
 			activity.startActivity(intent);
-			return 0;
-		} catch (ActivityNotFoundException e) {
-			return 1;
+			return Error.OK.toNativeValue();
+		} catch (Exception e) {
+			Log.e(TAG, "Unable to open uri " + uriString, e);
+			return Error.FAILED.toNativeValue();
 		}
 	}
 
 	public String getCacheDir() {
 		return activity.getCacheDir().getAbsolutePath();
+	}
+
+	public String getTempDir() {
+		File tempDir = new File(getCacheDir() + "/tmp");
+
+		if (!tempDir.exists()) {
+			if (!tempDir.mkdirs()) {
+				Log.e(TAG, "Unable to create temp dir");
+			}
+		}
+
+		return tempDir.getAbsolutePath();
 	}
 
 	public String getDataDir() {
@@ -150,7 +177,6 @@ public class GodotIO {
 		} else {
 			selectedScaledDensity = 0.75f;
 		}
-		Log.d(TAG, "Selected scaled density: " + selectedScaledDensity);
 		return selectedScaledDensity;
 	}
 
@@ -163,12 +189,10 @@ public class GodotIO {
 	}
 
 	public int[] getDisplaySafeArea() {
-		DisplayMetrics metrics = activity.getResources().getDisplayMetrics();
-		Display display = activity.getWindowManager().getDefaultDisplay();
-		Point size = new Point();
-		display.getRealSize(size);
+		Rect rect = new Rect();
+		activity.getWindow().getDecorView().getWindowVisibleDisplayFrame(rect);
 
-		int[] result = { 0, 0, size.x, size.y };
+		int[] result = { rect.left, rect.top, rect.right, rect.bottom };
 		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
 			WindowInsets insets = activity.getWindow().getDecorView().getRootWindowInsets();
 			DisplayCutout cutout = insets.getDisplayCutout();
@@ -201,6 +225,14 @@ public class GodotIO {
 			result[index++] = rect.height();
 		}
 		return result;
+	}
+
+	public boolean hasHardwareKeyboard() {
+		if (edit != null) {
+			return edit.hasHardwareKeyboard();
+		} else {
+			return false;
+		}
 	}
 
 	public void showKeyboard(String p_existing_text, int p_type, int p_max_input_length, int p_cursor_start, int p_cursor_end) {

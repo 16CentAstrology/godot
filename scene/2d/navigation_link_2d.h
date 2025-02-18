@@ -38,25 +38,41 @@ class NavigationLink2D : public Node2D {
 
 	bool enabled = true;
 	RID link;
+	RID map_override;
 	bool bidirectional = true;
 	uint32_t navigation_layers = 1;
-	Vector2 end_location;
-	Vector2 start_location;
+	Vector2 end_position;
+	Vector2 start_position;
 	real_t enter_cost = 0.0;
 	real_t travel_cost = 1.0;
+
+	Transform2D current_global_transform;
+
+#ifdef DEBUG_ENABLED
+	void _update_debug_mesh();
+#endif // DEBUG_ENABLED
 
 protected:
 	static void _bind_methods();
 	void _notification(int p_what);
 
+#ifndef DISABLE_DEPRECATED
+	bool _set(const StringName &p_name, const Variant &p_value);
+	bool _get(const StringName &p_name, Variant &r_ret) const;
+#endif // DISABLE_DEPRECATED
+
 public:
-#ifdef TOOLS_ENABLED
+#ifdef DEBUG_ENABLED
 	virtual Rect2 _edit_get_rect() const override;
 	virtual bool _edit_is_selected_on_click(const Point2 &p_point, double p_tolerance) const override;
-#endif
+#endif // DEBUG_ENABLED
+	RID get_rid() const;
 
 	void set_enabled(bool p_enabled);
 	bool is_enabled() const { return enabled; }
+
+	void set_navigation_map(RID p_navigation_map);
+	RID get_navigation_map() const;
 
 	void set_bidirectional(bool p_bidirectional);
 	bool is_bidirectional() const { return bidirectional; }
@@ -67,11 +83,17 @@ public:
 	void set_navigation_layer_value(int p_layer_number, bool p_value);
 	bool get_navigation_layer_value(int p_layer_number) const;
 
-	void set_start_location(Vector2 p_location);
-	Vector2 get_start_location() const { return start_location; }
+	void set_start_position(Vector2 p_position);
+	Vector2 get_start_position() const { return start_position; }
 
-	void set_end_location(Vector2 p_location);
-	Vector2 get_end_location() const { return end_location; }
+	void set_end_position(Vector2 p_position);
+	Vector2 get_end_position() const { return end_position; }
+
+	void set_global_start_position(Vector2 p_position);
+	Vector2 get_global_start_position() const;
+
+	void set_global_end_position(Vector2 p_position);
+	Vector2 get_global_end_position() const;
 
 	void set_enter_cost(real_t p_enter_cost);
 	real_t get_enter_cost() const { return enter_cost; }
@@ -83,6 +105,11 @@ public:
 
 	NavigationLink2D();
 	~NavigationLink2D();
+
+private:
+	void _link_enter_navigation_map();
+	void _link_exit_navigation_map();
+	void _link_update_transform();
 };
 
 #endif // NAVIGATION_LINK_2D_H

@@ -30,6 +30,8 @@
 
 #include "tls_context_mbedtls.h"
 
+#include "core/config/project_settings.h"
+
 static void my_debug(void *ctx, int level,
 		const char *file, int line,
 		const char *str) {
@@ -110,22 +112,20 @@ Error TLSContextMbedTLS::_setup(int p_endpoint, int p_transport, int p_authmode)
 	return OK;
 }
 
-Error TLSContextMbedTLS::init_server(int p_transport, int p_authmode, Ref<CryptoKeyMbedTLS> p_pkey, Ref<X509CertificateMbedTLS> p_cert, Ref<CookieContextMbedTLS> p_cookies) {
-	ERR_FAIL_COND_V(!p_pkey.is_valid(), ERR_INVALID_PARAMETER);
-	ERR_FAIL_COND_V(!p_cert.is_valid(), ERR_INVALID_PARAMETER);
+Error TLSContextMbedTLS::init_server(int p_transport, Ref<TLSOptions> p_options, Ref<CookieContextMbedTLS> p_cookies) {
+	ERR_FAIL_COND_V(p_options.is_null() || !p_options->is_server(), ERR_INVALID_PARAMETER);
 
-	Error err = _setup(MBEDTLS_SSL_IS_SERVER, p_transport, p_authmode);
+	// Check key and certificate(s)
+	pkey = p_options->get_private_key();
+	certs = p_options->get_own_certificate();
+	ERR_FAIL_COND_V(pkey.is_null() || certs.is_null(), ERR_INVALID_PARAMETER);
+
+	Error err = _setup(MBEDTLS_SSL_IS_SERVER, p_transport, MBEDTLS_SSL_VERIFY_NONE); // TODO client auth.
 	ERR_FAIL_COND_V(err != OK, err);
 
 	// Locking key and certificate(s)
-	pkey = p_pkey;
-	certs = p_cert;
-	if (pkey.is_valid()) {
-		pkey->lock();
-	}
-	if (certs.is_valid()) {
-		certs->lock();
-	}
+	pkey->lock();
+	certs->lock();
 
 	// Adding key and certificate
 	int ret = mbedtls_ssl_conf_own_cert(&conf, &(certs->cert), &(pkey->pkey));
@@ -146,19 +146,43 @@ Error TLSContextMbedTLS::init_server(int p_transport, int p_authmode, Ref<Crypto
 		cookies = p_cookies;
 		mbedtls_ssl_conf_dtls_cookies(&conf, mbedtls_ssl_cookie_write, mbedtls_ssl_cookie_check, &(cookies->cookie_ctx));
 	}
+
+	if (Engine::get_singleton()->is_editor_hint() || !(bool)GLOBAL_GET("network/tls/enable_tls_v1.3")) {
+		mbedtls_ssl_conf_max_tls_version(&conf, MBEDTLS_SSL_VERSION_TLS1_2);
+	}
+
 	mbedtls_ssl_setup(&tls, &conf);
 	return OK;
 }
 
-Error TLSContextMbedTLS::init_client(int p_transport, int p_authmode, Ref<X509CertificateMbedTLS> p_valid_cas) {
-	Error err = _setup(MBEDTLS_SSL_IS_CLIENT, p_transport, p_authmode);
+Error TLSContextMbedTLS::init_client(int p_transport, const String &p_hostname, Ref<TLSOptions> p_options) {
+	ERR_FAIL_COND_V(p_options.is_null() || p_options->is_server(), ERR_INVALID_PARAMETER);
+
+	int authmode = MBEDTLS_SSL_VERIFY_REQUIRED;
+	bool unsafe = p_options->is_unsafe_client();
+	if (unsafe && p_options->get_trusted_ca_chain().is_null()) {
+		authmode = MBEDTLS_SSL_VERIFY_NONE;
+	}
+
+	Error err = _setup(MBEDTLS_SSL_IS_CLIENT, p_transport, authmode);
 	ERR_FAIL_COND_V(err != OK, err);
+
+	if (unsafe) {
+		// No hostname verification for unsafe clients.
+		mbedtls_ssl_set_hostname(&tls, nullptr);
+	} else {
+		String cn = p_options->get_common_name_override();
+		if (cn.is_empty()) {
+			cn = p_hostname;
+		}
+		mbedtls_ssl_set_hostname(&tls, cn.utf8().get_data());
+	}
 
 	X509CertificateMbedTLS *cas = nullptr;
 
-	if (p_valid_cas.is_valid()) {
+	if (p_options->get_trusted_ca_chain().is_valid()) {
 		// Locking CA certificates
-		certs = p_valid_cas;
+		certs = p_options->get_trusted_ca_chain();
 		certs->lock();
 		cas = certs.ptr();
 	} else {
@@ -168,6 +192,10 @@ Error TLSContextMbedTLS::init_client(int p_transport, int p_authmode, Ref<X509Ce
 			clear();
 			ERR_FAIL_V_MSG(ERR_UNCONFIGURED, "SSL module failed to initialize!");
 		}
+	}
+
+	if (Engine::get_singleton()->is_editor_hint() || !(bool)GLOBAL_GET("network/tls/enable_tls_v1.3")) {
+		mbedtls_ssl_conf_max_tls_version(&conf, MBEDTLS_SSL_VERSION_TLS1_2);
 	}
 
 	// Set valid CAs

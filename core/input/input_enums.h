@@ -31,6 +31,8 @@
 #ifndef INPUT_ENUMS_H
 #define INPUT_ENUMS_H
 
+#include "core/error/error_macros.h"
+
 enum class HatDir {
 	UP = 0,
 	RIGHT = 1,
@@ -122,6 +124,7 @@ enum class MouseButton {
 };
 
 enum class MouseButtonMask {
+	NONE = 0,
 	LEFT = (1 << (int(MouseButton::LEFT) - 1)),
 	RIGHT = (1 << (int(MouseButton::RIGHT) - 1)),
 	MIDDLE = (1 << (int(MouseButton::MIDDLE) - 1)),
@@ -130,6 +133,8 @@ enum class MouseButtonMask {
 };
 
 inline MouseButtonMask mouse_button_to_mask(MouseButton button) {
+	ERR_FAIL_COND_V(button == MouseButton::NONE, MouseButtonMask::NONE);
+
 	return MouseButtonMask(1 << ((int)button - 1));
 }
 

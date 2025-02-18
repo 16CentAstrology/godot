@@ -30,18 +30,18 @@
 
 #include "export_plugin.h"
 
+#include "logo_svg.gen.h"
+#include "run_icon_svg.gen.h"
+
 #include "core/config/project_settings.h"
 #include "core/io/image_loader.h"
 #include "editor/editor_node.h"
 #include "editor/editor_paths.h"
-#include "editor/editor_scale.h"
-#include "platform/windows/logo_svg.gen.h"
-#include "platform/windows/run_icon_svg.gen.h"
+#include "editor/editor_string_names.h"
+#include "editor/export/editor_export.h"
+#include "editor/themes/editor_scale.h"
 
-#include "modules/modules_enabled.gen.h" // For svg.
-#ifdef MODULE_SVG_ENABLED
 #include "modules/svg/image_loader_svg.h"
-#endif
 
 Error EditorExportPlatformWindows::_process_icon(const Ref<EditorExportPreset> &p_preset, const String &p_src_path, const String &p_dst_path) {
 	static const uint8_t icon_size[] = { 16, 32, 48, 64, 128, 0 /*256*/ };
@@ -93,10 +93,9 @@ Error EditorExportPlatformWindows::_process_icon(const Ref<EditorExportPreset> &
 			f->seek(prev_offset);
 		}
 	} else {
-		Ref<Image> src_image;
-		src_image.instantiate();
-		err = ImageLoader::load_image(p_src_path, src_image);
-		ERR_FAIL_COND_V(err != OK || src_image->is_empty(), ERR_CANT_OPEN);
+		Ref<Image> src_image = _load_icon_or_splash_image(p_src_path, &err);
+		ERR_FAIL_COND_V(err != OK || src_image.is_null() || src_image->is_empty(), ERR_CANT_OPEN);
+
 		for (size_t i = 0; i < sizeof(icon_size) / sizeof(icon_size[0]); ++i) {
 			int size = (icon_size[i] == 0) ? 256 : icon_size[i];
 
@@ -164,18 +163,34 @@ Error EditorExportPlatformWindows::sign_shared_object(const Ref<EditorExportPres
 	}
 }
 
-Error EditorExportPlatformWindows::modify_template(const Ref<EditorExportPreset> &p_preset, bool p_debug, const String &p_path, int p_flags) {
+Error EditorExportPlatformWindows::modify_template(const Ref<EditorExportPreset> &p_preset, bool p_debug, const String &p_path, BitField<EditorExportPlatform::DebugFlags> p_flags) {
 	if (p_preset->get("application/modify_resources")) {
-		_rcedit_add_data(p_preset, p_path, true);
+		_rcedit_add_data(p_preset, p_path, false);
 		String wrapper_path = p_path.get_basename() + ".console.exe";
 		if (FileAccess::exists(wrapper_path)) {
-			_rcedit_add_data(p_preset, wrapper_path, false);
+			_rcedit_add_data(p_preset, wrapper_path, true);
 		}
 	}
 	return OK;
 }
 
-Error EditorExportPlatformWindows::export_project(const Ref<EditorExportPreset> &p_preset, bool p_debug, const String &p_path, int p_flags) {
+Error EditorExportPlatformWindows::export_project(const Ref<EditorExportPreset> &p_preset, bool p_debug, const String &p_path, BitField<EditorExportPlatform::DebugFlags> p_flags) {
+	String custom_debug = p_preset->get("custom_template/debug");
+	String custom_release = p_preset->get("custom_template/release");
+	String arch = p_preset->get("binary_format/architecture");
+
+	String template_path = p_debug ? custom_debug : custom_release;
+	template_path = template_path.strip_edges();
+	if (template_path.is_empty()) {
+		template_path = find_export_template(get_template_file_name(p_debug ? "debug" : "release", arch));
+	} else {
+		String exe_arch = _get_exe_arch(template_path);
+		if (arch != exe_arch) {
+			add_message(EXPORT_MESSAGE_ERROR, TTR("Prepare Templates"), vformat(TTR("Mismatching custom export template executable architecture: found \"%s\", expected \"%s\"."), exe_arch, arch));
+			return ERR_CANT_CREATE;
+		}
+	}
+
 	bool export_as_zip = p_path.ends_with("zip");
 	bool embedded = p_preset->get("binary_format/embed_pck");
 
@@ -190,10 +205,11 @@ Error EditorExportPlatformWindows::export_project(const Ref<EditorExportPreset> 
 
 	// Setup temp folder.
 	String path = p_path;
-	String tmp_dir_path = EditorPaths::get_singleton()->get_cache_dir().path_join(pkg_name);
+	String tmp_dir_path = EditorPaths::get_singleton()->get_temp_dir().path_join(pkg_name);
 	Ref<DirAccess> tmp_app_dir = DirAccess::create_for_path(tmp_dir_path);
 	if (export_as_zip) {
 		if (tmp_app_dir.is_null()) {
+			add_message(EXPORT_MESSAGE_ERROR, TTR("Prepare Templates"), vformat(TTR("Could not create and open the directory: \"%s\""), tmp_dir_path));
 			return ERR_CANT_CREATE;
 		}
 		if (DirAccess::exists(tmp_dir_path)) {
@@ -205,23 +221,77 @@ Error EditorExportPlatformWindows::export_project(const Ref<EditorExportPreset> 
 		path = tmp_dir_path.path_join(p_path.get_file().get_basename() + ".exe");
 	}
 
+	int export_angle = p_preset->get("application/export_angle");
+	bool include_angle_libs = false;
+	if (export_angle == 0) {
+		include_angle_libs = (String(GLOBAL_GET("rendering/gl_compatibility/driver.windows")) == "opengl3_angle") && (String(GLOBAL_GET("rendering/renderer/rendering_method")) == "gl_compatibility");
+	} else if (export_angle == 1) {
+		include_angle_libs = true;
+	}
+	if (include_angle_libs) {
+		Ref<DirAccess> da = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
+		if (da->file_exists(template_path.get_base_dir().path_join("libEGL." + arch + ".dll"))) {
+			da->copy(template_path.get_base_dir().path_join("libEGL." + arch + ".dll"), path.get_base_dir().path_join("libEGL.dll"), get_chmod_flags());
+		}
+		if (da->file_exists(template_path.get_base_dir().path_join("libGLESv2." + arch + ".dll"))) {
+			da->copy(template_path.get_base_dir().path_join("libGLESv2." + arch + ".dll"), path.get_base_dir().path_join("libGLESv2.dll"), get_chmod_flags());
+		}
+	}
+
+	int export_d3d12 = p_preset->get("application/export_d3d12");
+	bool agility_sdk_multiarch = p_preset->get("application/d3d12_agility_sdk_multiarch");
+	bool include_d3d12_extra_libs = false;
+	if (export_d3d12 == 0) {
+		include_d3d12_extra_libs = (String(GLOBAL_GET("rendering/rendering_device/driver.windows")) == "d3d12") && (String(GLOBAL_GET("rendering/renderer/rendering_method")) != "gl_compatibility");
+	} else if (export_d3d12 == 1) {
+		include_d3d12_extra_libs = true;
+	}
+	if (include_d3d12_extra_libs) {
+		Ref<DirAccess> da = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
+		if (da->file_exists(template_path.get_base_dir().path_join("D3D12Core." + arch + ".dll"))) {
+			if (agility_sdk_multiarch) {
+				da->make_dir_recursive(path.get_base_dir().path_join(arch));
+				da->copy(template_path.get_base_dir().path_join("D3D12Core." + arch + ".dll"), path.get_base_dir().path_join(arch).path_join("D3D12Core.dll"), get_chmod_flags());
+			} else {
+				da->copy(template_path.get_base_dir().path_join("D3D12Core." + arch + ".dll"), path.get_base_dir().path_join("D3D12Core.dll"), get_chmod_flags());
+			}
+		}
+		if (da->file_exists(template_path.get_base_dir().path_join("d3d12SDKLayers." + arch + ".dll"))) {
+			if (agility_sdk_multiarch) {
+				da->make_dir_recursive(path.get_base_dir().path_join(arch));
+				da->copy(template_path.get_base_dir().path_join("d3d12SDKLayers." + arch + ".dll"), path.get_base_dir().path_join(arch).path_join("d3d12SDKLayers.dll"), get_chmod_flags());
+			} else {
+				da->copy(template_path.get_base_dir().path_join("d3d12SDKLayers." + arch + ".dll"), path.get_base_dir().path_join("d3d12SDKLayers.dll"), get_chmod_flags());
+			}
+		}
+		if (da->file_exists(template_path.get_base_dir().path_join("WinPixEventRuntime." + arch + ".dll"))) {
+			da->copy(template_path.get_base_dir().path_join("WinPixEventRuntime." + arch + ".dll"), path.get_base_dir().path_join("WinPixEventRuntime.dll"), get_chmod_flags());
+		}
+	}
+
 	// Export project.
 	String pck_path = path;
 	if (embedded) {
 		pck_path = pck_path.get_basename() + ".tmp";
 	}
+
 	Error err = EditorExportPlatformPC::export_project(p_preset, p_debug, pck_path, p_flags);
-	if (p_preset->get("codesign/enable") && err == OK) {
+	if (err != OK) {
+		// Message is supplied by the subroutine method.
+		return err;
+	}
+
+	if (p_preset->get("codesign/enable")) {
 		_code_sign(p_preset, pck_path);
-		String wrapper_path = p_path.get_basename() + ".console.exe";
+		String wrapper_path = path.get_basename() + ".console.exe";
 		if (FileAccess::exists(wrapper_path)) {
 			_code_sign(p_preset, wrapper_path);
 		}
 	}
 
-	if (embedded && err == OK) {
-		Ref<DirAccess> tmp_dir = DirAccess::create_for_path(p_path.get_base_dir());
-		err = tmp_dir->rename(pck_path, p_path);
+	if (embedded) {
+		Ref<DirAccess> tmp_dir = DirAccess::create_for_path(path.get_base_dir());
+		err = tmp_dir->rename(pck_path, path);
 		if (err != OK) {
 			add_message(EXPORT_MESSAGE_ERROR, TTR("PCK Embedding"), vformat(TTR("Failed to rename temporary file \"%s\"."), pck_path));
 		}
@@ -262,45 +332,114 @@ List<String> EditorExportPlatformWindows::get_binary_extensions(const Ref<Editor
 	return list;
 }
 
-bool EditorExportPlatformWindows::get_export_option_visibility(const EditorExportPreset *p_preset, const String &p_option, const HashMap<StringName, Variant> &p_options) const {
+String EditorExportPlatformWindows::get_export_option_warning(const EditorExportPreset *p_preset, const StringName &p_name) const {
+	if (p_preset) {
+		if (p_name == "application/icon") {
+			String icon_path = ProjectSettings::get_singleton()->globalize_path(p_preset->get("application/icon"));
+			if (!icon_path.is_empty() && !FileAccess::exists(icon_path)) {
+				return TTR("Invalid icon path.");
+			}
+		} else if (p_name == "application/file_version") {
+			String file_version = p_preset->get("application/file_version");
+			if (!file_version.is_empty()) {
+				PackedStringArray version_array = file_version.split(".", false);
+				if (version_array.size() != 4 || !version_array[0].is_valid_int() ||
+						!version_array[1].is_valid_int() || !version_array[2].is_valid_int() ||
+						!version_array[3].is_valid_int() || file_version.contains_char('-')) {
+					return TTR("Invalid file version.");
+				}
+			}
+		} else if (p_name == "application/product_version") {
+			String product_version = p_preset->get("application/product_version");
+			if (!product_version.is_empty()) {
+				PackedStringArray version_array = product_version.split(".", false);
+				if (version_array.size() != 4 || !version_array[0].is_valid_int() ||
+						!version_array[1].is_valid_int() || !version_array[2].is_valid_int() ||
+						!version_array[3].is_valid_int() || product_version.contains_char('-')) {
+					return TTR("Invalid product version.");
+				}
+			}
+		}
+	}
+	return EditorExportPlatformPC::get_export_option_warning(p_preset, p_name);
+}
+
+bool EditorExportPlatformWindows::get_export_option_visibility(const EditorExportPreset *p_preset, const String &p_option) const {
+	if (p_preset == nullptr) {
+		return true;
+	}
+
 	// This option is not supported by "osslsigncode", used on non-Windows host.
 	if (!OS::get_singleton()->has_feature("windows") && p_option == "codesign/identity_type") {
 		return false;
 	}
+
+	bool advanced_options_enabled = p_preset->are_advanced_options_enabled();
+
+	// Hide codesign.
+	bool codesign = p_preset->get("codesign/enable");
+	if (!codesign && p_option != "codesign/enable" && p_option.begins_with("codesign/")) {
+		return false;
+	}
+
+	// Hide resources.
+	bool mod_res = p_preset->get("application/modify_resources");
+	if (!mod_res && p_option != "application/modify_resources" && p_option != "application/export_angle" && p_option != "application/export_d3d12" && p_option != "application/d3d12_agility_sdk_multiarch" && p_option.begins_with("application/")) {
+		return false;
+	}
+
+	// Hide SSH options.
+	bool ssh = p_preset->get("ssh_remote_deploy/enabled");
+	if (!ssh && p_option != "ssh_remote_deploy/enabled" && p_option.begins_with("ssh_remote_deploy/")) {
+		return false;
+	}
+
+	if (p_option == "dotnet/embed_build_outputs" ||
+			p_option == "custom_template/debug" ||
+			p_option == "custom_template/release" ||
+			p_option == "application/d3d12_agility_sdk_multiarch" ||
+			p_option == "application/export_angle" ||
+			p_option == "application/export_d3d12" ||
+			p_option == "application/icon_interpolation") {
+		return advanced_options_enabled;
+	}
 	return true;
 }
 
-void EditorExportPlatformWindows::get_export_options(List<ExportOption> *r_options) {
+void EditorExportPlatformWindows::get_export_options(List<ExportOption> *r_options) const {
 	EditorExportPlatformPC::get_export_options(r_options);
 
 	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "binary_format/architecture", PROPERTY_HINT_ENUM, "x86_64,x86_32,arm64"), "x86_64"));
 
-	r_options->push_back(ExportOption(PropertyInfo(Variant::BOOL, "codesign/enable"), false));
-	r_options->push_back(ExportOption(PropertyInfo(Variant::INT, "codesign/identity_type", PROPERTY_HINT_ENUM, "Select automatically,Use PKCS12 file (specify *.PFX/*.P12 file),Use certificate store (specify SHA1 hash)"), 0));
-	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "codesign/identity", PROPERTY_HINT_GLOBAL_FILE, "*.pfx,*.p12"), ""));
-	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "codesign/password", PROPERTY_HINT_PASSWORD), ""));
+	r_options->push_back(ExportOption(PropertyInfo(Variant::BOOL, "codesign/enable"), false, true));
+	r_options->push_back(ExportOption(PropertyInfo(Variant::INT, "codesign/identity_type", PROPERTY_HINT_ENUM, "Select automatically,Use PKCS12 file (specify *.PFX/*.P12 file),Use certificate store (specify SHA-1 hash)", PROPERTY_USAGE_DEFAULT | PROPERTY_USAGE_SECRET), 0));
+	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "codesign/identity", PROPERTY_HINT_GLOBAL_FILE, "*.pfx,*.p12", PROPERTY_USAGE_DEFAULT | PROPERTY_USAGE_SECRET), ""));
+	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "codesign/password", PROPERTY_HINT_PASSWORD, "", PROPERTY_USAGE_DEFAULT | PROPERTY_USAGE_SECRET), ""));
 	r_options->push_back(ExportOption(PropertyInfo(Variant::BOOL, "codesign/timestamp"), true));
 	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "codesign/timestamp_server_url"), ""));
 	r_options->push_back(ExportOption(PropertyInfo(Variant::INT, "codesign/digest_algorithm", PROPERTY_HINT_ENUM, "SHA1,SHA256"), 1));
 	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "codesign/description"), ""));
 	r_options->push_back(ExportOption(PropertyInfo(Variant::PACKED_STRING_ARRAY, "codesign/custom_options"), PackedStringArray()));
 
-	r_options->push_back(ExportOption(PropertyInfo(Variant::BOOL, "application/modify_resources"), true));
-	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "application/icon", PROPERTY_HINT_FILE, "*.ico,*.png,*.webp,*.svg"), ""));
+	r_options->push_back(ExportOption(PropertyInfo(Variant::BOOL, "application/modify_resources"), true, true));
+	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "application/icon", PROPERTY_HINT_FILE, "*.ico,*.png,*.webp,*.svg"), "", false, true));
 	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "application/console_wrapper_icon", PROPERTY_HINT_FILE, "*.ico,*.png,*.webp,*.svg"), ""));
 	r_options->push_back(ExportOption(PropertyInfo(Variant::INT, "application/icon_interpolation", PROPERTY_HINT_ENUM, "Nearest neighbor,Bilinear,Cubic,Trilinear,Lanczos"), 4));
-	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "application/file_version", PROPERTY_HINT_PLACEHOLDER_TEXT, "1.0.0.0"), ""));
-	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "application/product_version", PROPERTY_HINT_PLACEHOLDER_TEXT, "1.0.0.0"), ""));
+	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "application/file_version", PROPERTY_HINT_PLACEHOLDER_TEXT, "Leave empty to use project version"), ""));
+	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "application/product_version", PROPERTY_HINT_PLACEHOLDER_TEXT, "Leave empty to use project version"), ""));
 	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "application/company_name", PROPERTY_HINT_PLACEHOLDER_TEXT, "Company Name"), ""));
 	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "application/product_name", PROPERTY_HINT_PLACEHOLDER_TEXT, "Game Name"), ""));
 	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "application/file_description"), ""));
 	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "application/copyright"), ""));
 	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "application/trademarks"), ""));
+	r_options->push_back(ExportOption(PropertyInfo(Variant::INT, "application/export_angle", PROPERTY_HINT_ENUM, "Auto,Yes,No"), 0, true));
+	r_options->push_back(ExportOption(PropertyInfo(Variant::INT, "application/export_d3d12", PROPERTY_HINT_ENUM, "Auto,Yes,No"), 0, true));
+	r_options->push_back(ExportOption(PropertyInfo(Variant::BOOL, "application/d3d12_agility_sdk_multiarch"), true, true));
 
 	String run_script = "Expand-Archive -LiteralPath '{temp_dir}\\{archive_name}' -DestinationPath '{temp_dir}'\n"
 						"$action = New-ScheduledTaskAction -Execute '{temp_dir}\\{exe_name}' -Argument '{cmd_args}'\n"
 						"$trigger = New-ScheduledTaskTrigger -Once -At 00:00\n"
-						"$settings = New-ScheduledTaskSettingsSet\n"
+						"$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries\n"
 						"$task = New-ScheduledTask -Action $action -Trigger $trigger -Settings $settings\n"
 						"Register-ScheduledTask godot_remote_debug -InputObject $task -Force:$true\n"
 						"Start-ScheduledTask -TaskName godot_remote_debug\n"
@@ -311,7 +450,7 @@ void EditorExportPlatformWindows::get_export_options(List<ExportOption> *r_optio
 							"Unregister-ScheduledTask -TaskName godot_remote_debug -Confirm:$false -ErrorAction:SilentlyContinue\n"
 							"Remove-Item -Recurse -Force '{temp_dir}'";
 
-	r_options->push_back(ExportOption(PropertyInfo(Variant::BOOL, "ssh_remote_deploy/enabled"), false));
+	r_options->push_back(ExportOption(PropertyInfo(Variant::BOOL, "ssh_remote_deploy/enabled"), false, true));
 	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "ssh_remote_deploy/host"), "user@host_ip"));
 	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "ssh_remote_deploy/port"), "22"));
 
@@ -347,7 +486,16 @@ Error EditorExportPlatformWindows::_rcedit_add_data(const Ref<EditorExportPreset
 	}
 #endif
 
-	String icon_path = ProjectSettings::get_singleton()->globalize_path(p_preset->get("application/icon"));
+	String icon_path;
+	if (p_preset->get("application/icon") != "") {
+		icon_path = p_preset->get("application/icon");
+	} else if (GLOBAL_GET("application/config/windows_native_icon") != "") {
+		icon_path = GLOBAL_GET("application/config/windows_native_icon");
+	} else {
+		icon_path = GLOBAL_GET("application/config/icon");
+	}
+	icon_path = ProjectSettings::get_singleton()->globalize_path(icon_path);
+
 	if (p_console_icon) {
 		String console_icon_path = ProjectSettings::get_singleton()->globalize_path(p_preset->get("application/console_wrapper_icon"));
 		if (!console_icon_path.is_empty() && FileAccess::exists(console_icon_path)) {
@@ -355,7 +503,7 @@ Error EditorExportPlatformWindows::_rcedit_add_data(const Ref<EditorExportPreset
 		}
 	}
 
-	String tmp_icon_path = EditorPaths::get_singleton()->get_cache_dir().path_join("_rcedit.ico");
+	String tmp_icon_path = EditorPaths::get_singleton()->get_temp_dir().path_join("_rcedit.ico");
 	if (!icon_path.is_empty()) {
 		if (_process_icon(p_preset, icon_path, tmp_icon_path) != OK) {
 			add_message(EXPORT_MESSAGE_WARNING, TTR("Resources Modification"), vformat(TTR("Invalid icon file \"%s\"."), icon_path));
@@ -363,8 +511,8 @@ Error EditorExportPlatformWindows::_rcedit_add_data(const Ref<EditorExportPreset
 		}
 	}
 
-	String file_verion = p_preset->get("application/file_version");
-	String product_version = p_preset->get("application/product_version");
+	String file_version = p_preset->get_version("application/file_version", true);
+	String product_version = p_preset->get_version("application/product_version", true);
 	String company_name = p_preset->get("application/company_name");
 	String product_name = p_preset->get("application/product_name");
 	String file_description = p_preset->get("application/file_description");
@@ -378,9 +526,9 @@ Error EditorExportPlatformWindows::_rcedit_add_data(const Ref<EditorExportPreset
 		args.push_back("--set-icon");
 		args.push_back(tmp_icon_path);
 	}
-	if (!file_verion.is_empty()) {
+	if (!file_version.is_empty()) {
 		args.push_back("--set-file-version");
-		args.push_back(file_verion);
+		args.push_back(file_version);
 	}
 	if (!product_version.is_empty()) {
 		args.push_back("--set-product-version");
@@ -425,13 +573,13 @@ Error EditorExportPlatformWindows::_rcedit_add_data(const Ref<EditorExportPreset
 		DirAccess::remove_file_or_error(tmp_icon_path);
 	}
 
-	if (err != OK || (str.find("not found") != -1) || (str.find("not recognized") != -1)) {
+	if (err != OK || str.contains("not found") || str.contains("not recognized")) {
 		add_message(EXPORT_MESSAGE_WARNING, TTR("Resources Modification"), TTR("Could not start rcedit executable. Configure rcedit path in the Editor Settings (Export > Windows > rcedit), or disable \"Application > Modify Resources\" in the export preset."));
 		return err;
 	}
 	print_line("rcedit (" + p_path + "): " + str);
 
-	if (str.find("Fatal error") != -1) {
+	if (str.contains("Fatal error")) {
 		add_message(EXPORT_MESSAGE_WARNING, TTR("Resources Modification"), vformat(TTR("rcedit failed to modify executable: %s."), str));
 		return FAILED;
 	}
@@ -466,21 +614,21 @@ Error EditorExportPlatformWindows::_code_sign(const Ref<EditorExportPreset> &p_p
 
 	//identity
 #ifdef WINDOWS_ENABLED
-	int id_type = p_preset->get("codesign/identity_type");
+	int id_type = p_preset->get_or_env("codesign/identity_type", ENV_WIN_CODESIGN_ID_TYPE);
 	if (id_type == 0) { //auto select
 		args.push_back("/a");
 	} else if (id_type == 1) { //pkcs12
-		if (p_preset->get("codesign/identity") != "") {
+		if (p_preset->get_or_env("codesign/identity", ENV_WIN_CODESIGN_ID) != "") {
 			args.push_back("/f");
-			args.push_back(p_preset->get("codesign/identity"));
+			args.push_back(p_preset->get_or_env("codesign/identity", ENV_WIN_CODESIGN_ID));
 		} else {
 			add_message(EXPORT_MESSAGE_WARNING, TTR("Code Signing"), TTR("No identity found."));
 			return FAILED;
 		}
 	} else if (id_type == 2) { //Windows certificate store
-		if (p_preset->get("codesign/identity") != "") {
+		if (p_preset->get_or_env("codesign/identity", ENV_WIN_CODESIGN_ID) != "") {
 			args.push_back("/sha1");
-			args.push_back(p_preset->get("codesign/identity"));
+			args.push_back(p_preset->get_or_env("codesign/identity", ENV_WIN_CODESIGN_ID));
 		} else {
 			add_message(EXPORT_MESSAGE_WARNING, TTR("Code Signing"), TTR("No identity found."));
 			return FAILED;
@@ -490,9 +638,10 @@ Error EditorExportPlatformWindows::_code_sign(const Ref<EditorExportPreset> &p_p
 		return FAILED;
 	}
 #else
-	if (p_preset->get("codesign/identity") != "") {
+	int id_type = 1;
+	if (p_preset->get_or_env("codesign/identity", ENV_WIN_CODESIGN_ID) != "") {
 		args.push_back("-pkcs12");
-		args.push_back(p_preset->get("codesign/identity"));
+		args.push_back(p_preset->get_or_env("codesign/identity", ENV_WIN_CODESIGN_ID));
 	} else {
 		add_message(EXPORT_MESSAGE_WARNING, TTR("Code Signing"), TTR("No identity found."));
 		return FAILED;
@@ -500,13 +649,13 @@ Error EditorExportPlatformWindows::_code_sign(const Ref<EditorExportPreset> &p_p
 #endif
 
 	//password
-	if (p_preset->get("codesign/password") != "") {
+	if ((id_type == 1) && (p_preset->get_or_env("codesign/password", ENV_WIN_CODESIGN_PASS) != "")) {
 #ifdef WINDOWS_ENABLED
 		args.push_back("/p");
 #else
 		args.push_back("-pass");
 #endif
-		args.push_back(p_preset->get("codesign/password"));
+		args.push_back(p_preset->get_or_env("codesign/password", ENV_WIN_CODESIGN_PASS));
 	}
 
 	//timestamp
@@ -573,8 +722,8 @@ Error EditorExportPlatformWindows::_code_sign(const Ref<EditorExportPreset> &p_p
 
 	String str;
 	Error err = OS::get_singleton()->execute(signtool_path, args, &str, nullptr, true);
-	if (err != OK || (str.find("not found") != -1) || (str.find("not recognized") != -1)) {
-#ifndef WINDOWS_ENABLED
+	if (err != OK || str.contains("not found") || str.contains("not recognized")) {
+#ifdef WINDOWS_ENABLED
 		add_message(EXPORT_MESSAGE_WARNING, TTR("Code Signing"), TTR("Could not start signtool executable. Configure signtool path in the Editor Settings (Export > Windows > signtool), or disable \"Codesign\" in the export preset."));
 #else
 		add_message(EXPORT_MESSAGE_WARNING, TTR("Code Signing"), TTR("Could not start osslsigncode executable. Configure signtool path in the Editor Settings (Export > Windows > osslsigncode), or disable \"Codesign\" in the export preset."));
@@ -584,9 +733,9 @@ Error EditorExportPlatformWindows::_code_sign(const Ref<EditorExportPreset> &p_p
 
 	print_line("codesign (" + p_path + "): " + str);
 #ifndef WINDOWS_ENABLED
-	if (str.find("SignTool Error") != -1) {
+	if (str.contains("SignTool Error")) {
 #else
-	if (str.find("Failed") != -1) {
+	if (str.contains("Failed")) {
 #endif
 		add_message(EXPORT_MESSAGE_WARNING, TTR("Code Signing"), vformat(TTR("Signtool failed to sign executable: %s."), str));
 		return FAILED;
@@ -611,9 +760,26 @@ Error EditorExportPlatformWindows::_code_sign(const Ref<EditorExportPreset> &p_p
 	return OK;
 }
 
-bool EditorExportPlatformWindows::has_valid_export_configuration(const Ref<EditorExportPreset> &p_preset, String &r_error, bool &r_missing_templates) const {
-	String err = "";
-	bool valid = EditorExportPlatformPC::has_valid_export_configuration(p_preset, err, r_missing_templates);
+bool EditorExportPlatformWindows::has_valid_export_configuration(const Ref<EditorExportPreset> &p_preset, String &r_error, bool &r_missing_templates, bool p_debug) const {
+	String err;
+	bool valid = EditorExportPlatformPC::has_valid_export_configuration(p_preset, err, r_missing_templates, p_debug);
+
+	String custom_debug = p_preset->get("custom_template/debug").operator String().strip_edges();
+	String custom_release = p_preset->get("custom_template/release").operator String().strip_edges();
+	String arch = p_preset->get("binary_format/architecture");
+
+	if (!custom_debug.is_empty() && FileAccess::exists(custom_debug)) {
+		String exe_arch = _get_exe_arch(custom_debug);
+		if (arch != exe_arch) {
+			err += vformat(TTR("Mismatching custom debug export template executable architecture: found \"%s\", expected \"%s\"."), exe_arch, arch) + "\n";
+		}
+	}
+	if (!custom_release.is_empty() && FileAccess::exists(custom_release)) {
+		String exe_arch = _get_exe_arch(custom_release);
+		if (arch != exe_arch) {
+			err += vformat(TTR("Mismatching custom release export template executable architecture: found \"%s\", expected \"%s\"."), exe_arch, arch) + "\n";
+		}
+	}
 
 	String rcedit_path = EDITOR_GET("export/windows/rcedit");
 	if (p_preset->get("application/modify_resources") && rcedit_path.is_empty()) {
@@ -628,33 +794,20 @@ bool EditorExportPlatformWindows::has_valid_export_configuration(const Ref<Edito
 }
 
 bool EditorExportPlatformWindows::has_valid_project_configuration(const Ref<EditorExportPreset> &p_preset, String &r_error) const {
-	String err = "";
+	String err;
 	bool valid = true;
 
-	String icon_path = ProjectSettings::get_singleton()->globalize_path(p_preset->get("application/icon"));
-	if (!icon_path.is_empty() && !FileAccess::exists(icon_path)) {
-		err += TTR("Invalid icon path:") + " " + icon_path + "\n";
-	}
-
-	// Only non-negative integers can exist in the version string.
-
-	String file_version = p_preset->get("application/file_version");
-	if (!file_version.is_empty()) {
-		PackedStringArray version_array = file_version.split(".", false);
-		if (version_array.size() != 4 || !version_array[0].is_valid_int() ||
-				!version_array[1].is_valid_int() || !version_array[2].is_valid_int() ||
-				!version_array[3].is_valid_int() || file_version.find("-") > -1) {
-			err += TTR("Invalid file version:") + " " + file_version + "\n";
-		}
-	}
-
-	String product_version = p_preset->get("application/product_version");
-	if (!product_version.is_empty()) {
-		PackedStringArray version_array = product_version.split(".", false);
-		if (version_array.size() != 4 || !version_array[0].is_valid_int() ||
-				!version_array[1].is_valid_int() || !version_array[2].is_valid_int() ||
-				!version_array[3].is_valid_int() || product_version.find("-") > -1) {
-			err += TTR("Invalid product version:") + " " + product_version + "\n";
+	List<ExportOption> options;
+	get_export_options(&options);
+	for (const EditorExportPlatform::ExportOption &E : options) {
+		if (get_export_option_visibility(p_preset.ptr(), E.option.name)) {
+			String warn = get_export_option_warning(p_preset.ptr(), E.option.name);
+			if (!warn.is_empty()) {
+				err += warn + "\n";
+				if (E.required) {
+					valid = false;
+				}
+			}
 		}
 	}
 
@@ -663,6 +816,43 @@ bool EditorExportPlatformWindows::has_valid_project_configuration(const Ref<Edit
 	}
 
 	return valid;
+}
+
+String EditorExportPlatformWindows::_get_exe_arch(const String &p_path) const {
+	Ref<FileAccess> f = FileAccess::open(p_path, FileAccess::READ);
+	if (f.is_null()) {
+		return "invalid";
+	}
+
+	// Jump to the PE header and check the magic number.
+	{
+		f->seek(0x3c);
+		uint32_t pe_pos = f->get_32();
+
+		f->seek(pe_pos);
+		uint32_t magic = f->get_32();
+		if (magic != 0x00004550) {
+			return "invalid";
+		}
+	}
+
+	// Process header.
+	uint16_t machine = f->get_16();
+	f->close();
+
+	switch (machine) {
+		case 0x014c:
+			return "x86_32";
+		case 0x8664:
+			return "x86_64";
+		case 0x01c0:
+		case 0x01c4:
+			return "arm32";
+		case 0xaa64:
+			return "arm64";
+		default:
+			return "unknown";
+	}
 }
 
 Error EditorExportPlatformWindows::fixup_embedded_pck(const String &p_path, int64_t p_embedded_start, int64_t p_embedded_size) {
@@ -808,7 +998,7 @@ void EditorExportPlatformWindows::cleanup() {
 	cleanup_commands.clear();
 }
 
-Error EditorExportPlatformWindows::run(const Ref<EditorExportPreset> &p_preset, int p_device, int p_debug_flags) {
+Error EditorExportPlatformWindows::run(const Ref<EditorExportPreset> &p_preset, int p_device, BitField<EditorExportPlatform::DebugFlags> p_debug_flags) {
 	cleanup();
 	if (p_device) { // Stop command, cleanup only.
 		return OK;
@@ -816,7 +1006,7 @@ Error EditorExportPlatformWindows::run(const Ref<EditorExportPreset> &p_preset, 
 
 	EditorProgress ep("run", TTR("Running..."), 5);
 
-	const String dest = EditorPaths::get_singleton()->get_cache_dir().path_join("windows");
+	const String dest = EditorPaths::get_singleton()->get_temp_dir().path_join("windows");
 	Ref<DirAccess> da = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
 	if (!da->dir_exists(dest)) {
 		Error err = da->make_dir_recursive(dest);
@@ -831,8 +1021,8 @@ Error EditorExportPlatformWindows::run(const Ref<EditorExportPreset> &p_preset, 
 	if (port.is_empty()) {
 		port = "22";
 	}
-	Vector<String> extra_args_ssh = p_preset->get("ssh_remote_deploy/extra_args_ssh").operator String().split(" ");
-	Vector<String> extra_args_scp = p_preset->get("ssh_remote_deploy/extra_args_scp").operator String().split(" ");
+	Vector<String> extra_args_ssh = p_preset->get("ssh_remote_deploy/extra_args_ssh").operator String().split(" ", false);
+	Vector<String> extra_args_scp = p_preset->get("ssh_remote_deploy/extra_args_scp").operator String().split(" ", false);
 
 	const String basepath = dest.path_join("tmp_windows_export");
 
@@ -862,8 +1052,7 @@ Error EditorExportPlatformWindows::run(const Ref<EditorExportPreset> &p_preset, 
 
 	String cmd_args;
 	{
-		Vector<String> cmd_args_list;
-		gen_debug_flags(cmd_args_list, p_debug_flags);
+		Vector<String> cmd_args_list = gen_export_flags(p_debug_flags);
 		for (int i = 0; i < cmd_args_list.size(); i++) {
 			if (i != 0) {
 				cmd_args += " ";
@@ -872,13 +1061,17 @@ Error EditorExportPlatformWindows::run(const Ref<EditorExportPreset> &p_preset, 
 		}
 	}
 
-	const bool use_remote = (p_debug_flags & DEBUG_FLAG_REMOTE_DEBUG) || (p_debug_flags & DEBUG_FLAG_DUMB_CLIENT);
+	const bool use_remote = p_debug_flags.has_flag(DEBUG_FLAG_REMOTE_DEBUG) || p_debug_flags.has_flag(DEBUG_FLAG_DUMB_CLIENT);
 	int dbg_port = EditorSettings::get_singleton()->get("network/debug/remote_port");
 
 	print_line("Creating temporary directory...");
 	ep.step(TTR("Creating temporary directory..."), 2);
 	String temp_dir;
+#ifndef WINDOWS_ENABLED
 	err = ssh_run_on_remote(host, port, extra_args_ssh, "powershell -command \\\"\\$tmp = Join-Path \\$Env:Temp \\$(New-Guid); New-Item -Type Directory -Path \\$tmp | Out-Null; Write-Output \\$tmp\\\"", &temp_dir);
+#else
+	err = ssh_run_on_remote(host, port, extra_args_ssh, "powershell -command \"$tmp = Join-Path $Env:Temp $(New-Guid); New-Item -Type Directory -Path $tmp ^| Out-Null; Write-Output $tmp\"", &temp_dir);
+#endif
 	if (err != OK || temp_dir.is_empty()) {
 		CLEANUP_AND_RETURN(err);
 	}
@@ -888,6 +1081,10 @@ Error EditorExportPlatformWindows::run(const Ref<EditorExportPreset> &p_preset, 
 	err = ssh_push_to_remote(host, port, extra_args_scp, basepath + ".zip", temp_dir);
 	if (err != OK) {
 		CLEANUP_AND_RETURN(err);
+	}
+
+	if (cmd_args.is_empty()) {
+		cmd_args = " ";
 	}
 
 	{
@@ -948,22 +1145,21 @@ Error EditorExportPlatformWindows::run(const Ref<EditorExportPreset> &p_preset, 
 }
 
 EditorExportPlatformWindows::EditorExportPlatformWindows() {
-#ifdef MODULE_SVG_ENABLED
-	Ref<Image> img = memnew(Image);
-	const bool upsample = !Math::is_equal_approx(Math::round(EDSCALE), EDSCALE);
+	if (EditorNode::get_singleton()) {
+		Ref<Image> img = memnew(Image);
+		const bool upsample = !Math::is_equal_approx(Math::round(EDSCALE), EDSCALE);
 
-	ImageLoaderSVG img_loader;
-	img_loader.create_image_from_string(img, _windows_logo_svg, EDSCALE, upsample, false);
-	set_logo(ImageTexture::create_from_image(img));
+		ImageLoaderSVG::create_image_from_string(img, _windows_logo_svg, EDSCALE, upsample, false);
+		set_logo(ImageTexture::create_from_image(img));
 
-	img_loader.create_image_from_string(img, _windows_run_icon_svg, EDSCALE, upsample, false);
-	run_icon = ImageTexture::create_from_image(img);
-#endif
+		ImageLoaderSVG::create_image_from_string(img, _windows_run_icon_svg, EDSCALE, upsample, false);
+		run_icon = ImageTexture::create_from_image(img);
 
-	Ref<Theme> theme = EditorNode::get_singleton()->get_editor_theme();
-	if (theme.is_valid()) {
-		stop_icon = theme->get_icon(SNAME("Stop"), SNAME("EditorIcons"));
-	} else {
-		stop_icon.instantiate();
+		Ref<Theme> theme = EditorNode::get_singleton()->get_editor_theme();
+		if (theme.is_valid()) {
+			stop_icon = theme->get_icon(SNAME("Stop"), EditorStringName(EditorIcons));
+		} else {
+			stop_icon.instantiate();
+		}
 	}
 }

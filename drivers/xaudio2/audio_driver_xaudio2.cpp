@@ -33,27 +33,24 @@
 #include "core/config/project_settings.h"
 #include "core/os/os.h"
 
-const char *AudioDriverXAudio2::get_name() const {
-	return "XAudio2";
-}
-
 Error AudioDriverXAudio2::init() {
 	active.clear();
 	exit_thread.clear();
 	pcm_open = false;
 	samples_in = nullptr;
 
-	mix_rate = GLOBAL_GET("audio/driver/mix_rate");
+	mix_rate = _get_configured_mix_rate();
+
 	// FIXME: speaker_mode seems unused in the Xaudio2 driver so far
 	speaker_mode = SPEAKER_MODE_STEREO;
 	channels = 2;
 
-	int latency = GLOBAL_GET("audio/driver/output_latency");
+	int latency = Engine::get_singleton()->get_audio_output_latency();
 	buffer_size = closest_power_of_2(latency * mix_rate / 1000);
 
-	samples_in = memnew_arr(int32_t, buffer_size * channels);
+	samples_in = memnew_arr(int32_t, size_t(buffer_size) * channels);
 	for (int i = 0; i < AUDIO_BUFFERS; i++) {
-		samples_out[i] = memnew_arr(int16_t, buffer_size * channels);
+		samples_out[i] = memnew_arr(int16_t, size_t(buffer_size) * channels);
 		xaudio_buffer[i].AudioBytes = buffer_size * channels * sizeof(int16_t);
 		xaudio_buffer[i].pAudioData = (const BYTE *)(samples_out[i]);
 		xaudio_buffer[i].Flags = 0;
@@ -154,7 +151,9 @@ void AudioDriverXAudio2::unlock() {
 
 void AudioDriverXAudio2::finish() {
 	exit_thread.set();
-	thread.wait_to_finish();
+	if (thread.is_started()) {
+		thread.wait_to_finish();
+	}
 
 	if (source_voice) {
 		source_voice->Stop(0);

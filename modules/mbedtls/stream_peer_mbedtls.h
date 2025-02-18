@@ -31,8 +31,9 @@
 #ifndef STREAM_PEER_MBEDTLS_H
 #define STREAM_PEER_MBEDTLS_H
 
-#include "core/io/stream_peer_tls.h"
 #include "tls_context_mbedtls.h"
+
+#include "core/io/stream_peer_tls.h"
 
 class StreamPeerMbedTLS : public StreamPeerTLS {
 private:
@@ -41,7 +42,7 @@ private:
 
 	Ref<StreamPeer> base;
 
-	static StreamPeerTLS *_create_func();
+	static StreamPeerTLS *_create_func(bool p_notify_postinitialize);
 
 	static int bio_recv(void *ctx, unsigned char *buf, size_t len);
 	static int bio_send(void *ctx, const unsigned char *buf, size_t len);
@@ -54,8 +55,8 @@ protected:
 
 public:
 	virtual void poll();
-	virtual Error accept_stream(Ref<StreamPeer> p_base, Ref<CryptoKey> p_key, Ref<X509Certificate> p_cert, Ref<X509Certificate> p_ca_chain = Ref<X509Certificate>());
-	virtual Error connect_to_stream(Ref<StreamPeer> p_base, bool p_validate_certs = false, const String &p_for_hostname = String(), Ref<X509Certificate> p_valid_cert = Ref<X509Certificate>());
+	virtual Error accept_stream(Ref<StreamPeer> p_base, Ref<TLSOptions> p_options);
+	virtual Error connect_to_stream(Ref<StreamPeer> p_base, const String &p_common_name, Ref<TLSOptions> p_options);
 	virtual Status get_status() const;
 	virtual Ref<StreamPeer> get_stream() const;
 

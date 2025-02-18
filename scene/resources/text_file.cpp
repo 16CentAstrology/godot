@@ -30,7 +30,7 @@
 
 #include "text_file.h"
 
-#include "core/io/file_access.h"
+#include "core/io/resource_loader.h"
 
 bool TextFile::has_text() const {
 	return !text.is_empty();
@@ -67,5 +67,10 @@ Error TextFile::load_text(const String &p_path) {
 	ERR_FAIL_COND_V_MSG(s.parse_utf8((const char *)w) != OK, ERR_INVALID_DATA, "Script '" + p_path + "' contains invalid unicode (UTF-8), so it was not loaded. Please ensure that scripts are saved in valid UTF-8 unicode.");
 	text = s;
 	path = p_path;
+#ifdef TOOLS_ENABLED
+	if (ResourceLoader::get_timestamp_on_load()) {
+		set_last_modified_time(FileAccess::get_modified_time(path));
+	}
+#endif // TOOLS_ENABLED
 	return OK;
 }

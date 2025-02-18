@@ -30,15 +30,12 @@
 
 #include "dtls_server.h"
 
-#include "core/config/project_settings.h"
-#include "core/io/file_access.h"
-
-DTLSServer *(*DTLSServer::_create)() = nullptr;
+DTLSServer *(*DTLSServer::_create)(bool p_notify_postinitialize) = nullptr;
 bool DTLSServer::available = false;
 
-DTLSServer *DTLSServer::create() {
+DTLSServer *DTLSServer::create(bool p_notify_postinitialize) {
 	if (_create) {
-		return _create();
+		return _create(p_notify_postinitialize);
 	}
 	return nullptr;
 }
@@ -48,6 +45,6 @@ bool DTLSServer::is_available() {
 }
 
 void DTLSServer::_bind_methods() {
-	ClassDB::bind_method(D_METHOD("setup", "key", "certificate", "chain"), &DTLSServer::setup, DEFVAL(Ref<X509Certificate>()));
+	ClassDB::bind_method(D_METHOD("setup", "server_options"), &DTLSServer::setup);
 	ClassDB::bind_method(D_METHOD("take_connection", "udp_peer"), &DTLSServer::take_connection);
 }

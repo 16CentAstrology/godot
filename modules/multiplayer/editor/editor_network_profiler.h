@@ -31,14 +31,14 @@
 #ifndef EDITOR_NETWORK_PROFILER_H
 #define EDITOR_NETWORK_PROFILER_H
 
+#include "../multiplayer_debugger.h"
+
 #include "scene/debugger/scene_debugger.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
 #include "scene/gui/label.h"
 #include "scene/gui/split_container.h"
 #include "scene/gui/tree.h"
-
-#include "../multiplayer_debugger.h"
 
 class EditorNetworkProfiler : public VBoxContainer {
 	GDCLASS(EditorNetworkProfiler, VBoxContainer)
@@ -73,14 +73,33 @@ private:
 	HashMap<ObjectID, SyncInfo> sync_data;
 	HashMap<ObjectID, NodeInfo> node_data;
 	HashSet<ObjectID> missing_node_data;
-	Ref<Texture2D> node_icon;
+
+	struct ThemeCache {
+		Ref<Texture2D> node_icon;
+		Ref<Texture2D> stop_icon;
+		Ref<Texture2D> play_icon;
+		Ref<Texture2D> clear_icon;
+
+		Ref<Texture2D> multiplayer_synchronizer_icon;
+		Ref<Texture2D> instance_options_icon;
+
+		Ref<Texture2D> incoming_bandwidth_icon;
+		Ref<Texture2D> outgoing_bandwidth_icon;
+
+		Color incoming_bandwidth_color;
+		Color outgoing_bandwidth_color;
+	} theme_cache;
 
 	void _activate_pressed();
 	void _clear_pressed();
+	void _autostart_toggled(bool p_toggled_on);
 	void _refresh();
+	void _update_button_text();
 	void _replication_button_clicked(TreeItem *p_item, int p_column, int p_idx, MouseButton p_button);
 
 protected:
+	virtual void _update_theme_item_cache() override;
+
 	void _notification(int p_what);
 	static void _bind_methods();
 
@@ -94,6 +113,10 @@ public:
 	void add_sync_frame_data(const SyncInfo &p_frame);
 	void set_bandwidth(int p_incoming, int p_outgoing);
 	bool is_profiling();
+
+	void set_profiling(bool p_pressed);
+	void started();
+	void stopped();
 
 	EditorNetworkProfiler();
 };
